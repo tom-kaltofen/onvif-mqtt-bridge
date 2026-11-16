@@ -1,0 +1,178 @@
+# Example configuration for onvif_mqtt_bridge.
+# Copy to config.yaml and adjust.
+
+mqtt:
+  host: 192.168.1.10
+  port: 1883
+  username: mqtt_user
+  password: mqtt_password
+  client_id: onvif-mqtt-bridge
+  use_tls: false
+  qos: 0
+  retain: false
+  # Every event is published under <base_topic>/<camera-slug>/<...>
+  base_topic: onvif
+  # "per_event" (default): <base_topic>/<camera>/<onvif-topic>, e.g.
+  #   onvif/front_door/tns1:RuleEngine/CellMotionDetector/Motion
+  # Lets you subscribe/filter per event type with MQTT wildcards and gives
+  # each event type its own independently retained last value.
+  #
+  # "by_name": <base_topic>/<camera>/<slugified event name>, e.g.
+  #   onvif/front_door/vehicle_detection
+  # Shorter/more readable than the raw ONVIF topic, still one topic per
+  # event type - but two distinct ONVIF topics could in principle slugify
+  # to the same name and end up sharing one MQTT topic.
+  #
+  # "flat": every event for a camera goes to a single
+  # <base_topic>/<camera>/event topic instead; the ONVIF topic is still in
+  # the JSON payload's "topic" field either way. Simpler if you always
+  # subscribe to the whole camera and inspect the JSON payload anyway.
+  topic_style: per_event
+
+# Webhook is optional. If disabled, PullPoint (active polling) is used
+# exclusively - this always works, but is a bit slower than a webhook.
+webhook:
+  enabled: false
+  listen_host: 0.0.0.0
+  listen_port: 8976
+  # Base URL of this machine, reachable from the cameras:
+  base_url: "http://192.168.1.50:8976"
+
+cameras:
+  - name: Front Door
+    host: 192.168.1.20
+    port: 80
+    username: admin
+    password: cam_password
+    use_pullpoint: true
+    use_webhook: true
+    # Optional: stable identifier used as the parser "uid" (e.g. the
+    # camera's MAC address). Defaults to a slug derived from `name` if
+    # omitted, which is fine unless you plan to rename the camera later.
+    # unique_id: "00:11:22:33:44:55"
+    #
+    # Optional: PullPoint long-poll duration and its hard client-side
+    # ceiling, in seconds. Defaults to 60 / 10 (i.e. a 70s ceiling) if
+    # omitted. If the log shows "PullPoint pull failed, forcing a fresh
+    # subscription: RuntimeError('PullMessages stalled >70s ...')" for a
+    # camera *regularly* rather than as a rare one-off, that camera's
+    # normal (non-stuck) long-poll round-trip sometimes legitimately runs
+    # close to or past the default ceiling, and the ceiling is falsely
+    # forcing a real subscription teardown+recreate. Raise pull_hard_slack
+    # for that camera (e.g. to 20-30) instead of treating every occurrence
+    # as a genuine stall.
+    # pull_timeout: 60
+    # pull_hard_slack: 10
+    #
+    # Optional: seconds with no successful pull before this camera is
+    # reported offline over MQTT and (once also past this long since the
+    # last (re)subscribe) a fresh subscription is forced. Defaults to 120.
+    # Raise this if the log shows "availability changed to offline"
+    # followed by "PullPoint pull failed, forcing a fresh subscription:
+    # <SomeTransientError>" (the *original* transient error, not a
+    # 'PullMessages stalled' RuntimeError - that one is pull_hard_slack's
+    # concern) for this camera regularly: it means flap recovery kept
+    # retrying in place through repeated failures for the whole window
+    # without a single pull succeeding - a genuinely sustained outage from
+    # the bridge's perspective. If this camera's connectivity is simply
+    # worse than the default budget but reliably recovers on its own
+    # within a few minutes, give it more time before being written off.
+    # offline_grace: 120
+    #
+    # Optional: set to false to disable flap recovery's in-place retry for
+    # this specific camera - any transient pull error then immediately
+    # forces a fresh subscription instead, like the original component
+    # always did. Defaults to true, which is a no-op for a healthy camera
+    # and avoids discarding queued events on a mere transport blip for a
+    # flaky one. Only turn this off if you know this camera's disconnects
+    # reliably mean the subscription itself died (not just the transport),
+    # making the in-place retry pure wasted time before the same fresh
+    # subscription happens anyway.
+    # flap_recovery: true
+    #
+    # Further per-camera timing overrides (all optional, default to the
+    # bridge-wide const.py values below if omitted). Reach for these only
+    # if a specific camera's behavior calls for it - most setups never
+    # need them:
+    # stuck_on_timeout: 60             # fix #1 watchdog (seconds)
+    # subscription_time: 600           # PullPoint/webhook subscription lifetime (seconds)
+    # subscription_restart_interval: 60 # delay after a non-transient (re)subscribe failure (seconds)
+    # pullpoint_message_limit: 100     # max events requested per PullMessages call
+    # pullpoint_cooldown: 0.75         # delay between successful pull iterations (seconds)
+    # flap_pull_retry_delay: 0.25      # delay between in-place flap retries (seconds)
+    # flap_resub_delay: 1.0            # delay before re-subscribing after an escalation (seconds)
+    # teardown_timeout: 5              # max time to wait for Unsubscribe/shutdown (seconds)
+    #
+    # Optional: force a fresh PullPoint/webhook subscription every N hours,
+    # unconditionally - even if everything currently looks perfectly
+    # healthy. Disabled by default. Mitigates a known class of camera
+    # firmware bug where the ONVIF transport/subscription stays fully
+    # responsive (so the bridge keeps reporting "online") while the
+    # camera's own event/motion-detection engine silently stops producing
+    # any events after a long uptime - invisible at the protocol level,
+    # since PullMessages keeps succeeding, just always empty. A fresh
+    # subscription sometimes "wakes" a stuck camera-side event engine back
+    # up even though the connection itself was never the problem.
+    #
+    # Unconditional, so it reconnects a healthy, actively-reporting camera
+    # just as readily as a stale one - prefer stale_event_reconnect_hours
+    # below instead if this camera does receive events with some
+    # regularity, since it doesn't disrupt a camera that's already working
+    # fine. Reach for this one instead only for a camera so quiet under
+    # normal operation that "no events for a while" isn't a useful
+    # staleness signal by itself - a sensible starting point is once every
+    # 24 hours:
+    # periodic_reconnect_hours: 24
+    #
+    # Optional: event-aware alternative to periodic_reconnect_hours above -
+    # force a fresh subscription once no *event* has actually been received
+    # in this many hours, rather than unconditionally on a fixed schedule.
+    # Disabled by default; preferred over periodic_reconnect_hours for a
+    # camera that does see events with some regularity, since it only
+    # reconnects once there's actual evidence of a problem (the camera
+    # keeps working fine otherwise and is never disrupted by this). If the
+    # camera shows "online" for days with no events, this is the setting
+    # that catches it. Set this comfortably longer than the longest gap
+    # you'd expect between events during normal operation, e.g.:
+    # stale_event_reconnect_hours: 72
+    #
+    # Optional: some cameras return a broken SubscriptionReference address
+    # for PullPoint/webhook subscriptions (wrong port, e.g. a fixed 1024,
+    # sometimes even an internal-only IP) that is unreachable even though
+    # the camera itself is reachable fine on host/port above. If PullPoint
+    # or the webhook can't be reached despite the camera otherwise working,
+    # set this to true to force every such address back to this camera's
+    # host/port (only the host:port is rewritten, the path is kept, so the
+    # correct subscription is still targeted).
+    # nat_override: true
+    #
+    # Optional: some camera/doorbell combos additionally have a physical
+    # doorbell button that isn't exposed as an ONVIF event at all - pressing
+    # it makes the doorbell send a UDP broadcast from its own IP instead,
+    # observed entirely independently of (and asynchronously to) the ONVIF
+    # event stream above. Disabled by default. When enabled, publishes
+    # "on" then "off" (after doorbell_pulse_seconds) to
+    # onvif/front_door/doorbell exactly like any other event.
+    # Optional: initial-connection retry (seconds). If this camera can't be
+    # reached - e.g. the bridge started before the network was up ("Network
+    # is unreachable") - the bridge retries forever, starting at
+    # connect_retry_interval and doubling up to connect_retry_max_interval
+    # between attempts. The same retry applies if every event transport is
+    # lost later. Defaults: 5 and 60.
+    # connect_retry_interval: 5
+    # connect_retry_max_interval: 60
+    #
+    # doorbell_enabled: true
+    # doorbell_ip: 192.168.1.20        # defaults to this camera's own `host` if omitted
+    # doorbell_port: 20005             # check your doorbell's traffic - varies by model
+    # doorbell_pulse_seconds: 2
+
+  - name: Garage
+    host: 192.168.1.21
+    port: 80
+    username: admin
+    password: cam_password
+    use_pullpoint: true
+    use_webhook: false
+    ignored_topics:
+      - "tns1:VideoSource/ImageTooBlurry/ImagingService"

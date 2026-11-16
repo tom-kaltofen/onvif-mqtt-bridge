@@ -1,0 +1,53 @@
+# systemd unit for onvif-mqtt-bridge.
+#
+# Installed by systemd/install.sh, or manually:
+#   sudo cp systemd/onvif-mqtt-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now onvif-mqtt-bridge
+#
+# Assumes the layout install.sh creates:
+#   code:    /opt/onvif-mqtt-bridge/{onvif_mqtt_bridge.py,bridge.py,...,venv/}
+#   config:  /etc/onvif-mqtt-bridge/config.yaml
+#   user:    a dedicated, unprivileged system user "onvif-mqtt-bridge"
+# Adjust the paths/User below if you installed elsewhere.
+
+[Unit]
+Description=ONVIF-MQTT bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=onvif-mqtt-bridge
+Group=onvif-mqtt-bridge
+WorkingDirectory=/opt/onvif-mqtt-bridge
+ExecStart=/opt/onvif-mqtt-bridge/venv/bin/python3 /opt/onvif-mqtt-bridge/onvif_mqtt_bridge.py --config /etc/onvif-mqtt-bridge/config.yaml
+Restart=always
+RestartSec=5
+# The bridge already retries ONVIF and MQTT reconnects internally (see
+# README.md, "Reconnect behavior on connection loss"); this Restart= is a
+# last-resort safety net for the process itself dying unexpectedly, not the
+# primary reconnect mechanism.
+
+# Give a clean shutdown (publishes the "offline" status message and
+# unsubscribes from cameras) a moment to finish before SIGKILL.
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+# Basic hardening. Remove/relax any of these if they cause problems on your
+# distribution.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/onvif-mqtt-bridge
+ReadOnlyPaths=/etc/onvif-mqtt-bridge
+
+# Logs go to the journal; view with:
+#   journalctl -u onvif-mqtt-bridge -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=onvif-mqtt-bridge
+
+[Install]
+WantedBy=multi-user.target
